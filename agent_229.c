@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 
 #define PORT 9410
@@ -14,10 +15,108 @@
 #define AUTH_TOKEN "OPS-2229"
 #define SESSION_ID "9222"
 
+#define STORAGE_DIR "./agentfiles/IT24102229"
+#define MAX_FILE_SIZE (10 * 1024 * 1024)
 
-/*
- * SYSINFO
- */
+
+int send_all(int sock_fd, const char *data, size_t length)
+{
+    size_t total_sent = 0;
+
+    while (total_sent < length)
+    {
+        ssize_t sent = send(sock_fd,
+                            data + total_sent,
+                            length - total_sent,
+                            0);
+
+        if (sent <= 0)
+        {
+            return -1;
+        }
+
+        total_sent += sent;
+    }
+
+    return 0;
+}
+
+
+int receive_line(int sock_fd, char *buffer, size_t buffer_size)
+{
+    size_t position = 0;
+
+    while (position < buffer_size - 1)
+    {
+        char character;
+
+        ssize_t received =
+            recv(sock_fd, &character, 1, 0);
+
+        if (received <= 0)
+        {
+            return -1;
+        }
+
+        buffer[position++] = character;
+
+        if (character == '\n')
+        {
+            break;
+        }
+    }
+
+    buffer[position] = '\0';
+
+    return (int)position;
+}
+
+
+int receive_exact(int sock_fd,
+                  FILE *file,
+                  long filesize)
+{
+    char buffer[BUFFER_SIZE];
+    long remaining = filesize;
+
+    while (remaining > 0)
+    {
+        size_t amount = sizeof(buffer);
+
+        if (remaining < (long)amount)
+        {
+            amount = (size_t)remaining;
+        }
+
+        ssize_t received =
+            recv(sock_fd,
+                 buffer,
+                 amount,
+                 0);
+
+        if (received <= 0)
+        {
+            return -1;
+        }
+
+        size_t written =
+            fwrite(buffer,
+                   1,
+                   received,
+                   file);
+
+        if (written != (size_t)received)
+        {
+            return -1;
+        }
+
+        remaining -= received;
+    }
+
+    return 0;
+}
+
+
 void get_sysinfo(char *response, size_t response_size)
 {
     FILE *fp;
@@ -28,9 +127,6 @@ void get_sysinfo(char *response, size_t response_size)
     long mem_total_kb = 0;
     long mem_available_kb = 0;
 
-    /*
-     * Get uptime.
-     */
     fp = fopen("/proc/uptime", "r");
 
     if (fp != NULL)
@@ -39,9 +135,6 @@ void get_sysinfo(char *response, size_t response_size)
         fclose(fp);
     }
 
-    /*
-     * Get CPU load.
-     */
     fp = fopen("/proc/loadavg", "r");
 
     if (fp != NULL)
@@ -50,9 +143,6 @@ void get_sysinfo(char *response, size_t response_size)
         fclose(fp);
     }
 
-    /*
-     * Get memory information.
-     */
     fp = fopen("/proc/meminfo", "r");
 
     if (fp != NULL)
@@ -79,15 +169,9 @@ void get_sysinfo(char *response, size_t response_size)
         fclose(fp);
     }
 
-    /*
-     * Calculate used memory in MB.
-     */
     long mem_used_mb =
         (mem_total_kb - mem_available_kb) / 1024;
 
-    /*
-     * Create SYSINFO response.
-     */
     snprintf(response,
              response_size,
              "OK SYSINFO %.2f %ld %.0f SID:%s\n",
@@ -98,9 +182,6 @@ void get_sysinfo(char *response, size_t response_size)
 }
 
 
-/*
- * LISTPROC
- */
 void get_process_list(char *response, size_t response_size)
 {
     FILE *fp;
@@ -108,9 +189,6 @@ void get_process_list(char *response, size_t response_size)
 
     size_t used = 0;
 
-    /*
-     * Run ps to get PID and process name.
-     */
     fp = popen("ps -e -o pid=,comm=", "r");
 
     if (fp == NULL)
@@ -119,33 +197,20 @@ void get_process_list(char *response, size_t response_size)
                  response_size,
                  "ERR 003 PROCESS_LIST_FAILED SID:%s\n",
                  SESSION_ID);
-
         return;
     }
 
-    /*
-     * Start the response.
-     */
     used = snprintf(response,
                     response_size,
                     "OK PROCS ");
 
-    /*
-     * Read each process.
-     */
     while (fgets(line, sizeof(line), fp) != NULL)
     {
         char pid[32];
         char name[128];
 
-        /*
-         * Remove newline.
-         */
         line[strcspn(line, "\n")] = '\0';
 
-        /*
-         * Extract PID and process name.
-         */
         if (sscanf(line,
                    "%31s %127s",
                    pid,
@@ -153,9 +218,6 @@ void get_process_list(char *response, size_t response_size)
         {
             int written;
 
-            /*
-             * Add comma between processes.
-             */
             if (used > strlen("OK PROCS "))
             {
                 written = snprintf(response + used,
@@ -171,9 +233,6 @@ void get_process_list(char *response, size_t response_size)
                 used += written;
             }
 
-            /*
-             * Add PID/process-name pair.
-             */
             written = snprintf(response + used,
                                response_size - used,
                                "%s/%s",
@@ -190,14 +249,8 @@ void get_process_list(char *response, size_t response_size)
         }
     }
 
-    /*
-     * Close ps.
-     */
     pclose(fp);
 
-    /*
-     * Add SID.
-     */
     if (used < response_size)
     {
         snprintf(response + used,
@@ -208,32 +261,14 @@ void get_process_list(char *response, size_t response_size)
 }
 
 
-/*
- * EXEC
- *
- * Only these commands are allowed:
- *
- * DATE
- * UPTIME
- * DISKFREE
- * HOSTNAME
- * WHOAMI
- *
- * Arbitrary commands are NOT accepted.
- */
 void execute_command(char *command,
                      char *response,
                      size_t response_size)
 {
     const char *system_command = NULL;
-
     FILE *fp;
-
     char output[512];
 
-    /*
-     * Check the fixed whitelist.
-     */
     if (strcmp(command, "DATE") == 0)
     {
         system_command = "date";
@@ -256,20 +291,13 @@ void execute_command(char *command,
     }
     else
     {
-        /*
-         * Command is not in the whitelist.
-         */
         snprintf(response,
                  response_size,
-                 "ERR 004 UNKNOWN_EXEC SID:%s\n",
+                 "ERR 002 COMMAND_NOT_ALLOWED SID:%s\n",
                  SESSION_ID);
-
         return;
     }
 
-    /*
-     * Execute the predefined command.
-     */
     fp = popen(system_command, "r");
 
     if (fp == NULL)
@@ -278,18 +306,11 @@ void execute_command(char *command,
                  response_size,
                  "ERR 005 EXEC_FAILED SID:%s\n",
                  SESSION_ID);
-
         return;
     }
 
-    /*
-     * Clear output buffer.
-     */
     memset(output, 0, sizeof(output));
 
-    /*
-     * Read command output.
-     */
     if (fgets(output,
               sizeof(output),
               fp) == NULL)
@@ -298,23 +319,16 @@ void execute_command(char *command,
 
         snprintf(response,
                  response_size,
-                 "OK EXEC %s 0 SID:%s\n",
+                 "OK EXEC_RESULT %s SID:%s\n",
                  command,
                  SESSION_ID);
 
         return;
     }
 
-    /*
-     * Remove newline from output.
-     */
     output[strcspn(output, "\n")] = '\0';
 
-    /*
-     * Get exit status.
-     */
     int status = pclose(fp);
-
     int exit_code = 0;
 
     if (WIFEXITED(status))
@@ -322,12 +336,9 @@ void execute_command(char *command,
         exit_code = WEXITSTATUS(status);
     }
 
-    /*
-     * Create EXEC response.
-     */
     snprintf(response,
              response_size,
-             "OK EXEC %s %d %s SID:%s\n",
+             "OK EXEC_RESULT %s %d %s SID:%s\n",
              command,
              exit_code,
              output,
@@ -335,9 +346,126 @@ void execute_command(char *command,
 }
 
 
-/*
- * MAIN
- */
+int handle_put(int client_fd, char *header)
+{
+    char filename[256];
+    long filesize;
+
+    if (sscanf(header,
+               "PUT %255s %ld",
+               filename,
+               &filesize) != 2)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 004 FILE_TOO_LARGE SID:%s\n",
+                 SESSION_ID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        return 0;
+    }
+
+    if (filesize < 0 ||
+        filesize > MAX_FILE_SIZE)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 004 FILE_TOO_LARGE SID:%s\n",
+                 SESSION_ID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        return 0;
+    }
+
+    if (strstr(filename, "/") != NULL ||
+        strstr(filename, "..") != NULL)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 004 FILE_TOO_LARGE SID:%s\n",
+                 SESSION_ID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        return 0;
+    }
+
+    mkdir("./agentfiles", 0755);
+    mkdir(STORAGE_DIR, 0755);
+
+    char filepath[512];
+
+    snprintf(filepath,
+             sizeof(filepath),
+             "%s/%s",
+             STORAGE_DIR,
+             filename);
+
+    FILE *file = fopen(filepath, "wb");
+
+    if (file == NULL)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 004 FILE_TOO_LARGE SID:%s\n",
+                 SESSION_ID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        return 0;
+    }
+
+    int result =
+        receive_exact(client_fd,
+                      file,
+                      filesize);
+
+    fclose(file);
+
+    if (result < 0)
+    {
+        remove(filepath);
+        return -1;
+    }
+
+    char response[BUFFER_SIZE];
+
+    snprintf(response,
+             sizeof(response),
+             "OK FILE_RECEIVED %s SID:%s\n",
+             filename,
+             SESSION_ID);
+
+    send_all(client_fd,
+             response,
+             strlen(response));
+
+    printf("PUT received: %s (%ld bytes)\n",
+           filename,
+           filesize);
+
+    return 0;
+}
+
+
 int main()
 {
     int server_fd;
@@ -350,9 +478,6 @@ int main()
 
     char buffer[BUFFER_SIZE];
 
-    /*
-     * Create TCP socket.
-     */
     server_fd = socket(AF_INET,
                        SOCK_STREAM,
                        0);
@@ -365,9 +490,6 @@ int main()
 
     printf("TCP socket created successfully.\n");
 
-    /*
-     * Configure server address.
-     */
     memset(&server_addr,
            0,
            sizeof(server_addr));
@@ -376,40 +498,26 @@ int main()
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    /*
-     * Bind socket to port.
-     */
     if (bind(server_fd,
              (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0)
     {
         perror("Bind failed");
-
         close(server_fd);
-
         return 1;
     }
 
-    printf("Agent bound to port %d.\n",
-           PORT);
+    printf("Agent bound to port %d.\n", PORT);
 
-    /*
-     * Start listening.
-     */
     if (listen(server_fd, 5) < 0)
     {
         perror("Listen failed");
-
         close(server_fd);
-
         return 1;
     }
 
     printf("Agent is listening...\n");
 
-    /*
-     * Accept Controller connection.
-     */
     client_fd = accept(server_fd,
                        (struct sockaddr *)&client_addr,
                        &client_len);
@@ -417,52 +525,29 @@ int main()
     if (client_fd < 0)
     {
         perror("Accept failed");
-
         close(server_fd);
-
         return 1;
     }
 
     printf("Controller connected successfully!\n");
 
-    /*
-     * Authentication status.
-     */
     int authenticated = 0;
 
-    /*
-     * Receive commands.
-     */
     while (1)
     {
-        memset(buffer,
-               0,
-               sizeof(buffer));
+        memset(buffer, 0, sizeof(buffer));
 
-        int bytes_received =
-            recv(client_fd,
-                 buffer,
-                 sizeof(buffer) - 1,
-                 0);
-
-        if (bytes_received <= 0)
+        if (receive_line(client_fd,
+                         buffer,
+                         sizeof(buffer)) < 0)
         {
             printf("Controller disconnected.\n");
             break;
         }
 
-        buffer[bytes_received] = '\0';
+        printf("Received: %s", buffer);
 
-        printf("Received: %s",
-               buffer);
-
-
-        /*
-         * AUTH
-         */
-        if (strncmp(buffer,
-                    "AUTH ",
-                    5) == 0)
+        if (strncmp(buffer, "AUTH ", 5) == 0)
         {
             char expected_command[BUFFER_SIZE];
 
@@ -471,11 +556,7 @@ int main()
                      "AUTH %s\n",
                      AUTH_TOKEN);
 
-            /*
-             * Correct authentication token.
-             */
-            if (strcmp(buffer,
-                       expected_command) == 0)
+            if (strcmp(buffer, expected_command) == 0)
             {
                 authenticated = 1;
 
@@ -486,17 +567,12 @@ int main()
                          "OK AUTHENTICATED SID:%s\n",
                          SESSION_ID);
 
-                send(client_fd,
-                     response,
-                     strlen(response),
-                     0);
+                send_all(client_fd,
+                         response,
+                         strlen(response));
 
                 printf("Authentication successful.\n");
             }
-
-            /*
-             * Incorrect authentication token.
-             */
             else
             {
                 char response[BUFFER_SIZE];
@@ -506,19 +582,13 @@ int main()
                          "ERR 001 AUTH_FAILED SID:%s\n",
                          SESSION_ID);
 
-                send(client_fd,
-                     response,
-                     strlen(response),
-                     0);
+                send_all(client_fd,
+                         response,
+                         strlen(response));
 
                 printf("Authentication failed.\n");
             }
         }
-
-
-        /*
-         * REJECT COMMANDS BEFORE AUTHENTICATION
-         */
         else if (!authenticated)
         {
             char response[BUFFER_SIZE];
@@ -528,67 +598,41 @@ int main()
                      "ERR 001 AUTH_FAILED SID:%s\n",
                      SESSION_ID);
 
-            send(client_fd,
-                 response,
-                 strlen(response),
-                 0);
+            send_all(client_fd,
+                     response,
+                     strlen(response));
         }
-
-
-        /*
-         * SYSINFO
-         */
-        else if (strcmp(buffer,
-                        "SYSINFO\n") == 0)
+        else if (strcmp(buffer, "SYSINFO\n") == 0)
         {
             char response[BUFFER_SIZE];
 
             get_sysinfo(response,
                         sizeof(response));
 
-            send(client_fd,
-                 response,
-                 strlen(response),
-                 0);
+            send_all(client_fd,
+                     response,
+                     strlen(response));
 
             printf("SYSINFO sent.\n");
         }
-
-
-        /*
-         * LISTPROC
-         */
-        else if (strcmp(buffer,
-                        "LISTPROC\n") == 0)
+        else if (strcmp(buffer, "LISTPROC\n") == 0)
         {
             char response[BUFFER_SIZE];
 
             get_process_list(response,
                              sizeof(response));
 
-            send(client_fd,
-                 response,
-                 strlen(response),
-                 0);
+            send_all(client_fd,
+                     response,
+                     strlen(response));
 
             printf("LISTPROC sent.\n");
         }
-
-
-        /*
-         * EXEC
-         */
-        else if (strncmp(buffer,
-                         "EXEC ",
-                         5) == 0)
+        else if (strncmp(buffer, "EXEC ", 5) == 0)
         {
             char command[128];
-
             char response[BUFFER_SIZE];
 
-            /*
-             * Extract command after "EXEC ".
-             */
             if (sscanf(buffer + 5,
                        "%127s",
                        command) == 1)
@@ -597,10 +641,9 @@ int main()
                                 response,
                                 sizeof(response));
 
-                send(client_fd,
-                     response,
-                     strlen(response),
-                     0);
+                send_all(client_fd,
+                         response,
+                         strlen(response));
 
                 printf("EXEC %s sent.\n",
                        command);
@@ -609,20 +652,21 @@ int main()
             {
                 snprintf(response,
                          sizeof(response),
-                         "ERR 004 UNKNOWN_EXEC SID:%s\n",
+                         "ERR 002 COMMAND_NOT_ALLOWED SID:%s\n",
                          SESSION_ID);
 
-                send(client_fd,
-                     response,
-                     strlen(response),
-                     0);
+                send_all(client_fd,
+                         response,
+                         strlen(response));
             }
         }
-
-
-        /*
-         * UNKNOWN COMMAND
-         */
+        else if (strncmp(buffer, "PUT ", 4) == 0)
+        {
+            if (handle_put(client_fd, buffer) < 0)
+            {
+                break;
+            }
+        }
         else
         {
             char response[BUFFER_SIZE];
@@ -632,19 +676,13 @@ int main()
                      "ERR 002 COMMAND_NOT_ALLOWED SID:%s\n",
                      SESSION_ID);
 
-            send(client_fd,
-                 response,
-                 strlen(response),
-                 0);
+            send_all(client_fd,
+                     response,
+                     strlen(response));
         }
     }
 
-
-    /*
-     * Close connections.
-     */
     close(client_fd);
-
     close(server_fd);
 
     printf("Agent stopped.\n");

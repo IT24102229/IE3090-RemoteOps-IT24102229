@@ -89,7 +89,40 @@ int main(void)
     buffer[bytes_received] = '\0';
 
     printf("Agent response: %s", buffer);
+    /*
+ * Send LISTPROC
+ */
+const char *listproc_command =
+    "LISTPROC\n";
 
+send(sock_fd,
+     listproc_command,
+     strlen(listproc_command),
+     0);
+
+printf("Sent: %s", listproc_command);
+
+/*
+ * Receive LISTPROC response
+ */
+memset(buffer, 0, sizeof(buffer));
+
+bytes_received =
+    recv(sock_fd,
+         buffer,
+         sizeof(buffer) - 1,
+         0);
+
+if (bytes_received <= 0)
+{
+    printf("Agent disconnected.\n");
+    close(sock_fd);
+    return 1;
+}
+
+buffer[bytes_received] = '\0';
+
+printf("Agent response: %s", buffer);
     /*
      * Send SYSINFO
      */

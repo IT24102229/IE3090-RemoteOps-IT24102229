@@ -13,18 +13,22 @@
 #define AUTH_TOKEN "OPS-2229"
 #define SESSION_ID "9222"
 
+
+/*
+ * Get system information.
+ */
 void get_sysinfo(char *response, size_t response_size)
 {
     FILE *fp;
 
-    double uptime;
-    double load_average;
+    double uptime = 0;
+    double load_average = 0;
 
     long mem_total_kb = 0;
     long mem_available_kb = 0;
 
     /*
-     * Get uptime and load average
+     * Get uptime from /proc/uptime.
      */
     fp = fopen("/proc/uptime", "r");
 
@@ -33,13 +37,9 @@ void get_sysinfo(char *response, size_t response_size)
         fscanf(fp, "%lf", &uptime);
         fclose(fp);
     }
-    else
-    {
-        uptime = 0;
-    }
 
     /*
-     * Get CPU load from /proc/loadavg
+     * Get CPU load from /proc/loadavg.
      */
     fp = fopen("/proc/loadavg", "r");
 
@@ -48,13 +48,9 @@ void get_sysinfo(char *response, size_t response_size)
         fscanf(fp, "%lf", &load_average);
         fclose(fp);
     }
-    else
-    {
-        load_average = 0;
-    }
 
     /*
-     * Get memory information
+     * Get memory information from /proc/meminfo.
      */
     fp = fopen("/proc/meminfo", "r");
 
@@ -62,10 +58,9 @@ void get_sysinfo(char *response, size_t response_size)
     {
         char line[256];
 
-        while (fgets(line, sizeof(line), fp))
+        while (fgets(line, sizeof(line), fp) != NULL)
         {
-            if (sscanf(line, "MemTotal: %ld kB",
-                       &mem_total_kb) == 1)
+            if (sscanf(line, "MemTotal: %ld kB", &mem_total_kb) == 1)
             {
                 continue;
             }
@@ -80,9 +75,15 @@ void get_sysinfo(char *response, size_t response_size)
         fclose(fp);
     }
 
+    /*
+     * Calculate used memory.
+     */
     long mem_used_mb =
         (mem_total_kb - mem_available_kb) / 1024;
 
+    /*
+     * Create SYSINFO response.
+     */
     snprintf(response,
              response_size,
              "OK SYSINFO %.2f %ld %.0f SID:%s\n",
@@ -92,7 +93,123 @@ void get_sysinfo(char *response, size_t response_size)
              SESSION_ID);
 }
 
-int main(void)
+
+/*
+ * Get the list of running processes.
+ *
+ * This uses the Linux ps command to obtain:
+ * PID and process name.
+ */
+void get_process_list(char *response, size_t response_size)
+{
+    FILE *fp;
+    char line[256];
+
+    size_t used = 0;
+
+    /*
+     * Start the ps command.
+     *
+     * -e = show all processes
+     * -o = choose the output columns
+     */
+    fp = popen("ps -e -o pid=,comm=", "r");
+
+    if (fp == NULL)
+    {
+        snprintf(response,
+                 response_size,
+                 "ERR 003 PROCESS_LIST_FAILED SID:%s\n",
+                 SESSION_ID);
+        return;
+    }
+
+    /*
+     * Start the response.
+     */
+    used = snprintf(response,
+                    response_size,
+                    "OK PROCS ");
+
+    /*
+     * Read each process.
+     */
+    while (fgets(line, sizeof(line), fp) != NULL)
+    {
+        char pid[32];
+        char name[128];
+
+        /*
+         * Remove the newline.
+         */
+        line[strcspn(line, "\n")] = '\0';
+
+        /*
+         * Read PID and process name.
+         */
+        if (sscanf(line, "%31s %127s", pid, name) == 2)
+        {
+            int written;
+
+            /*
+             * Add comma between processes.
+             */
+            if (used > strlen("OK PROCS "))
+            {
+                written = snprintf(response + used,
+                                    response_size - used,
+                                    ",");
+
+                if (written < 0 ||
+                    (size_t)written >= response_size - used)
+                {
+                    break;
+                }
+
+                used += written;
+            }
+
+            /*
+             * Add PID/process-name pair.
+             */
+            written = snprintf(response + used,
+                               response_size - used,
+                               "%s/%s",
+                               pid,
+                               name);
+
+            if (written < 0 ||
+                (size_t)written >= response_size - used)
+            {
+                break;
+            }
+
+            used += written;
+        }
+    }
+
+    /*
+     * Close the ps command.
+     */
+    pclose(fp);
+
+    /*
+     * Add the required SID.
+     */
+    if (used < response_size)
+    {
+        snprintf(response + used,
+                 response_size - used,
+                 " SID:%s\n",
+                 SESSION_ID);
+    }
+}
+
+
+/*
+ * Main Agent program.
+ */
+int main()
 {
     int server_fd;
     int client_fd;
@@ -104,56 +221,64 @@ int main(void)
 
     char buffer[BUFFER_SIZE];
 
-    int authenticated = 0;
-
-    /* Create TCP socket */
+    /*
+     * Create TCP socket.
+     */
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (server_fd < 0)
     {
-        perror("socket");
+        perror("Socket creation failed");
         return 1;
     }
 
     printf("TCP socket created successfully.\n");
 
-    /* Prepare server address */
+    /*
+     * Configure server address.
+     */
     memset(&server_addr, 0, sizeof(server_addr));
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    /* Bind */
+    /*
+     * Bind socket to port 9410.
+     */
     if (bind(server_fd,
              (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0)
     {
-        perror("bind");
+        perror("Bind failed");
         close(server_fd);
         return 1;
     }
 
     printf("Agent bound to port %d.\n", PORT);
 
-    /* Listen */
+    /*
+     * Start listening.
+     */
     if (listen(server_fd, 5) < 0)
     {
-        perror("listen");
+        perror("Listen failed");
         close(server_fd);
         return 1;
     }
 
     printf("Agent is listening...\n");
 
-    /* Accept one Controller */
+    /*
+     * Accept Controller connection.
+     */
     client_fd = accept(server_fd,
                        (struct sockaddr *)&client_addr,
                        &client_len);
 
     if (client_fd < 0)
     {
-        perror("accept");
+        perror("Accept failed");
         close(server_fd);
         return 1;
     }
@@ -161,13 +286,18 @@ int main(void)
     printf("Controller connected successfully!\n");
 
     /*
-     * Command processing loop
+     * Authentication status.
+     */
+    int authenticated = 0;
+
+    /*
+     * Continue receiving commands.
      */
     while (1)
     {
         memset(buffer, 0, sizeof(buffer));
 
-        ssize_t bytes_received =
+        int bytes_received =
             recv(client_fd,
                  buffer,
                  sizeof(buffer) - 1,
@@ -184,7 +314,7 @@ int main(void)
         printf("Received: %s", buffer);
 
         /*
-         * AUTH command
+         * AUTH command.
          */
         if (strncmp(buffer, "AUTH ", 5) == 0)
         {
@@ -197,9 +327,9 @@ int main(void)
 
             if (strcmp(buffer, expected_command) == 0)
             {
-                char response[BUFFER_SIZE];
-
                 authenticated = 1;
+
+                char response[BUFFER_SIZE];
 
                 snprintf(response,
                          sizeof(response),
@@ -229,14 +359,12 @@ int main(void)
 
                 printf("Authentication failed.\n");
             }
-
-            continue;
         }
 
         /*
-         * Reject commands before authentication
+         * Reject commands if authentication has not happened.
          */
-        if (!authenticated)
+        else if (!authenticated)
         {
             char response[BUFFER_SIZE];
 
@@ -249,14 +377,12 @@ int main(void)
                  response,
                  strlen(response),
                  0);
-
-            continue;
         }
 
         /*
-         * SYSINFO command
+         * SYSINFO command.
          */
-        if (strcmp(buffer, "SYSINFO\n") == 0)
+        else if (strcmp(buffer, "SYSINFO\n") == 0)
         {
             char response[BUFFER_SIZE];
 
@@ -270,6 +396,28 @@ int main(void)
 
             printf("SYSINFO sent.\n");
         }
+
+        /*
+         * LISTPROC command.
+         */
+        else if (strcmp(buffer, "LISTPROC\n") == 0)
+        {
+            char response[BUFFER_SIZE];
+
+            get_process_list(response,
+                             sizeof(response));
+
+            send(client_fd,
+                 response,
+                 strlen(response),
+                 0);
+
+            printf("LISTPROC sent.\n");
+        }
+
+        /*
+         * Unknown command.
+         */
         else
         {
             char response[BUFFER_SIZE];
@@ -286,6 +434,9 @@ int main(void)
         }
     }
 
+    /*
+     * Close connections.
+     */
     close(client_fd);
     close(server_fd);
 

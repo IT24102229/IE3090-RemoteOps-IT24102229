@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -19,6 +18,7 @@
 #define MAX_FILE_SIZE (10 * 1024 * 1024)
 
 
+/* Send all requested bytes */
 int send_all(int sock_fd, const char *data, size_t length)
 {
     size_t total_sent = 0;
@@ -42,6 +42,7 @@ int send_all(int sock_fd, const char *data, size_t length)
 }
 
 
+/* Receive one complete line ending with \n */
 int receive_line(int sock_fd, char *buffer, size_t buffer_size)
 {
     size_t position = 0;
@@ -72,6 +73,7 @@ int receive_line(int sock_fd, char *buffer, size_t buffer_size)
 }
 
 
+/* Receive exactly the requested number of bytes */
 int receive_exact(int sock_fd,
                   FILE *file,
                   long filesize)
@@ -117,6 +119,7 @@ int receive_exact(int sock_fd,
 }
 
 
+/* Get system information */
 void get_sysinfo(char *response, size_t response_size)
 {
     FILE *fp;
@@ -182,6 +185,7 @@ void get_sysinfo(char *response, size_t response_size)
 }
 
 
+/* Get list of running processes */
 void get_process_list(char *response, size_t response_size)
 {
     FILE *fp;
@@ -261,12 +265,15 @@ void get_process_list(char *response, size_t response_size)
 }
 
 
+/* Execute only the allowed commands */
 void execute_command(char *command,
                      char *response,
                      size_t response_size)
 {
     const char *system_command = NULL;
+
     FILE *fp;
+
     char output[512];
 
     if (strcmp(command, "DATE") == 0)
@@ -346,6 +353,7 @@ void execute_command(char *command,
 }
 
 
+/* Receive a file from the Controller */
 int handle_put(int client_fd, char *header)
 {
     char filename[256];
@@ -466,6 +474,156 @@ int handle_put(int client_fd, char *header)
 }
 
 
+/* Send a stored file to the Controller */
+int handle_get(int client_fd, char *header)
+{
+    char filename[256];
+    char filepath[512];
+    char response[BUFFER_SIZE];
+
+    if (sscanf(header,
+               "GET %255s",
+               filename) != 1)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SESSION_ID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        return 0;
+    }
+
+    /* Prevent access outside the storage directory */
+    if (strstr(filename, "/") != NULL ||
+        strstr(filename, "..") != NULL)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SESSION_ID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        return 0;
+    }
+
+    snprintf(filepath,
+             sizeof(filepath),
+             "%s/%s",
+             STORAGE_DIR,
+             filename);
+
+    FILE *file = fopen(filepath, "rb");
+
+    if (file == NULL)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SESSION_ID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        printf("GET file not found: %s\n",
+               filename);
+
+        return 0;
+    }
+
+    /* Find file size */
+    fseek(file, 0, SEEK_END);
+
+    long filesize = ftell(file);
+
+    fseek(file, 0, SEEK_SET);
+
+    if (filesize < 0)
+    {
+        fclose(file);
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SESSION_ID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        return 0;
+    }
+
+    /* Send the response header */
+    snprintf(response,
+             sizeof(response),
+             "OK FILE_SEND %s %ld SID:%s\n",
+             filename,
+             filesize,
+             SESSION_ID);
+
+    if (send_all(client_fd,
+                 response,
+                 strlen(response)) < 0)
+    {
+        fclose(file);
+        return -1;
+    }
+
+    /* Send the actual file bytes */
+    char buffer[BUFFER_SIZE];
+
+    while (1)
+    {
+        size_t bytes_read =
+            fread(buffer,
+                  1,
+                  sizeof(buffer),
+                  file);
+
+        if (bytes_read > 0)
+        {
+            if (send_all(client_fd,
+                         buffer,
+                         bytes_read) < 0)
+            {
+                fclose(file);
+                return -1;
+            }
+        }
+
+        if (bytes_read < sizeof(buffer))
+        {
+            if (feof(file))
+            {
+                break;
+            }
+
+            if (ferror(file))
+            {
+                fclose(file);
+                return -1;
+            }
+        }
+    }
+
+    fclose(file);
+
+    printf("GET sent: %s (%ld bytes)\n",
+           filename,
+           filesize);
+
+    return 0;
+}
+
+
 int main()
 {
     int server_fd;
@@ -474,10 +632,12 @@ int main()
     struct sockaddr_in server_addr;
     struct sockaddr_in client_addr;
 
-    socklen_t client_len = sizeof(client_addr);
+    socklen_t client_len =
+        sizeof(client_addr);
 
     char buffer[BUFFER_SIZE];
 
+    /* Create TCP socket */
     server_fd = socket(AF_INET,
                        SOCK_STREAM,
                        0);
@@ -490,6 +650,7 @@ int main()
 
     printf("TCP socket created successfully.\n");
 
+    /* Configure server address */
     memset(&server_addr,
            0,
            sizeof(server_addr));
@@ -498,6 +659,7 @@ int main()
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
+    /* Bind socket */
     if (bind(server_fd,
              (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0)
@@ -507,8 +669,10 @@ int main()
         return 1;
     }
 
-    printf("Agent bound to port %d.\n", PORT);
+    printf("Agent bound to port %d.\n",
+           PORT);
 
+    /* Listen for Controllers */
     if (listen(server_fd, 5) < 0)
     {
         perror("Listen failed");
@@ -518,6 +682,7 @@ int main()
 
     printf("Agent is listening...\n");
 
+    /* Accept Controller connection */
     client_fd = accept(server_fd,
                        (struct sockaddr *)&client_addr,
                        &client_len);
@@ -535,7 +700,9 @@ int main()
 
     while (1)
     {
-        memset(buffer, 0, sizeof(buffer));
+        memset(buffer,
+               0,
+               sizeof(buffer));
 
         if (receive_line(client_fd,
                          buffer,
@@ -545,8 +712,10 @@ int main()
             break;
         }
 
-        printf("Received: %s", buffer);
+        printf("Received: %s",
+               buffer);
 
+        /* AUTH */
         if (strncmp(buffer, "AUTH ", 5) == 0)
         {
             char expected_command[BUFFER_SIZE];
@@ -556,7 +725,8 @@ int main()
                      "AUTH %s\n",
                      AUTH_TOKEN);
 
-            if (strcmp(buffer, expected_command) == 0)
+            if (strcmp(buffer,
+                       expected_command) == 0)
             {
                 authenticated = 1;
 
@@ -589,6 +759,8 @@ int main()
                 printf("Authentication failed.\n");
             }
         }
+
+        /* Reject commands before authentication */
         else if (!authenticated)
         {
             char response[BUFFER_SIZE];
@@ -602,7 +774,10 @@ int main()
                      response,
                      strlen(response));
         }
-        else if (strcmp(buffer, "SYSINFO\n") == 0)
+
+        /* SYSINFO */
+        else if (strcmp(buffer,
+                        "SYSINFO\n") == 0)
         {
             char response[BUFFER_SIZE];
 
@@ -615,7 +790,10 @@ int main()
 
             printf("SYSINFO sent.\n");
         }
-        else if (strcmp(buffer, "LISTPROC\n") == 0)
+
+        /* LISTPROC */
+        else if (strcmp(buffer,
+                        "LISTPROC\n") == 0)
         {
             char response[BUFFER_SIZE];
 
@@ -628,7 +806,11 @@ int main()
 
             printf("LISTPROC sent.\n");
         }
-        else if (strncmp(buffer, "EXEC ", 5) == 0)
+
+        /* EXEC */
+        else if (strncmp(buffer,
+                         "EXEC ",
+                         5) == 0)
         {
             char command[128];
             char response[BUFFER_SIZE];
@@ -660,13 +842,32 @@ int main()
                          strlen(response));
             }
         }
-        else if (strncmp(buffer, "PUT ", 4) == 0)
+
+        /* PUT */
+        else if (strncmp(buffer,
+                         "PUT ",
+                         4) == 0)
         {
-            if (handle_put(client_fd, buffer) < 0)
+            if (handle_put(client_fd,
+                           buffer) < 0)
             {
                 break;
             }
         }
+
+        /* GET */
+        else if (strncmp(buffer,
+                         "GET ",
+                         4) == 0)
+        {
+            if (handle_get(client_fd,
+                           buffer) < 0)
+            {
+                break;
+            }
+        }
+
+        /* Unknown command */
         else
         {
             char response[BUFFER_SIZE];

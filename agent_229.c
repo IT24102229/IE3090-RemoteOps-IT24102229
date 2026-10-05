@@ -13,6 +13,85 @@
 #define AUTH_TOKEN "OPS-2229"
 #define SESSION_ID "9222"
 
+void get_sysinfo(char *response, size_t response_size)
+{
+    FILE *fp;
+
+    double uptime;
+    double load_average;
+
+    long mem_total_kb = 0;
+    long mem_available_kb = 0;
+
+    /*
+     * Get uptime and load average
+     */
+    fp = fopen("/proc/uptime", "r");
+
+    if (fp != NULL)
+    {
+        fscanf(fp, "%lf", &uptime);
+        fclose(fp);
+    }
+    else
+    {
+        uptime = 0;
+    }
+
+    /*
+     * Get CPU load from /proc/loadavg
+     */
+    fp = fopen("/proc/loadavg", "r");
+
+    if (fp != NULL)
+    {
+        fscanf(fp, "%lf", &load_average);
+        fclose(fp);
+    }
+    else
+    {
+        load_average = 0;
+    }
+
+    /*
+     * Get memory information
+     */
+    fp = fopen("/proc/meminfo", "r");
+
+    if (fp != NULL)
+    {
+        char line[256];
+
+        while (fgets(line, sizeof(line), fp))
+        {
+            if (sscanf(line, "MemTotal: %ld kB",
+                       &mem_total_kb) == 1)
+            {
+                continue;
+            }
+
+            if (sscanf(line, "MemAvailable: %ld kB",
+                       &mem_available_kb) == 1)
+            {
+                continue;
+            }
+        }
+
+        fclose(fp);
+    }
+
+    long mem_used_mb =
+        (mem_total_kb - mem_available_kb) / 1024;
+
+    snprintf(response,
+             response_size,
+             "OK SYSINFO %.2f %ld %.0f SID:%s\n",
+             load_average,
+             mem_used_mb,
+             uptime,
+             SESSION_ID);
+}
+
 int main(void)
 {
     int server_fd;
@@ -24,6 +103,8 @@ int main(void)
     socklen_t client_len = sizeof(client_addr);
 
     char buffer[BUFFER_SIZE];
+
+    int authenticated = 0;
 
     /* Create TCP socket */
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -43,7 +124,7 @@ int main(void)
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    /* Bind socket to port */
+    /* Bind */
     if (bind(server_fd,
              (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0)
@@ -55,7 +136,7 @@ int main(void)
 
     printf("Agent bound to port %d.\n", PORT);
 
-    /* Listen for connections */
+    /* Listen */
     if (listen(server_fd, 5) < 0)
     {
         perror("listen");
@@ -65,7 +146,7 @@ int main(void)
 
     printf("Agent is listening...\n");
 
-    /* Accept Controller connection */
+    /* Accept one Controller */
     client_fd = accept(server_fd,
                        (struct sockaddr *)&client_addr,
                        &client_len);
@@ -80,68 +161,129 @@ int main(void)
     printf("Controller connected successfully!\n");
 
     /*
-     * Receive authentication command
+     * Command processing loop
      */
-    memset(buffer, 0, sizeof(buffer));
-
-    ssize_t bytes_received = recv(client_fd,
-                                  buffer,
-                                  sizeof(buffer) - 1,
-                                  0);
-
-    if (bytes_received < 0)
+    while (1)
     {
-        perror("recv");
-        close(client_fd);
-        close(server_fd);
-        return 1;
-    }
+        memset(buffer, 0, sizeof(buffer));
 
-    buffer[bytes_received] = '\0';
+        ssize_t bytes_received =
+            recv(client_fd,
+                 buffer,
+                 sizeof(buffer) - 1,
+                 0);
 
-    printf("Received: %s", buffer);
+        if (bytes_received <= 0)
+        {
+            printf("Controller disconnected.\n");
+            break;
+        }
 
-    /*
-     * Check authentication command
-     */
-    char expected_command[BUFFER_SIZE];
+        buffer[bytes_received] = '\0';
 
-    snprintf(expected_command,
-             sizeof(expected_command),
-             "AUTH %s\n",
-             AUTH_TOKEN);
+        printf("Received: %s", buffer);
 
-    if (strcmp(buffer, expected_command) == 0)
-    {
-        char response[BUFFER_SIZE];
+        /*
+         * AUTH command
+         */
+        if (strncmp(buffer, "AUTH ", 5) == 0)
+        {
+            char expected_command[BUFFER_SIZE];
 
-        snprintf(response,
-                 sizeof(response),
-                 "OK AUTHENTICATED SID:%s\n",
-                 SESSION_ID);
+            snprintf(expected_command,
+                     sizeof(expected_command),
+                     "AUTH %s\n",
+                     AUTH_TOKEN);
 
-        send(client_fd,
-             response,
-             strlen(response),
-             0);
+            if (strcmp(buffer, expected_command) == 0)
+            {
+                char response[BUFFER_SIZE];
 
-        printf("Authentication successful.\n");
-    }
-    else
-    {
-        char response[BUFFER_SIZE];
+                authenticated = 1;
 
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 001 AUTH_FAILED SID:%s\n",
-                 SESSION_ID);
+                snprintf(response,
+                         sizeof(response),
+                         "OK AUTHENTICATED SID:%s\n",
+                         SESSION_ID);
 
-        send(client_fd,
-             response,
-             strlen(response),
-             0);
+                send(client_fd,
+                     response,
+                     strlen(response),
+                     0);
 
-        printf("Authentication failed.\n");
+                printf("Authentication successful.\n");
+            }
+            else
+            {
+                char response[BUFFER_SIZE];
+
+                snprintf(response,
+                         sizeof(response),
+                         "ERR 001 AUTH_FAILED SID:%s\n",
+                         SESSION_ID);
+
+                send(client_fd,
+                     response,
+                     strlen(response),
+                     0);
+
+                printf("Authentication failed.\n");
+            }
+
+            continue;
+        }
+
+        /*
+         * Reject commands before authentication
+         */
+        if (!authenticated)
+        {
+            char response[BUFFER_SIZE];
+
+            snprintf(response,
+                     sizeof(response),
+                     "ERR 001 AUTH_FAILED SID:%s\n",
+                     SESSION_ID);
+
+            send(client_fd,
+                 response,
+                 strlen(response),
+                 0);
+
+            continue;
+        }
+
+        /*
+         * SYSINFO command
+         */
+        if (strcmp(buffer, "SYSINFO\n") == 0)
+        {
+            char response[BUFFER_SIZE];
+
+            get_sysinfo(response,
+                        sizeof(response));
+
+            send(client_fd,
+                 response,
+                 strlen(response),
+                 0);
+
+            printf("SYSINFO sent.\n");
+        }
+        else
+        {
+            char response[BUFFER_SIZE];
+
+            snprintf(response,
+                     sizeof(response),
+                     "ERR 002 COMMAND_NOT_ALLOWED SID:%s\n",
+                     SESSION_ID);
+
+            send(client_fd,
+                 response,
+                 strlen(response),
+                 0);
+        }
     }
 
     close(client_fd);

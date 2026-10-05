@@ -45,7 +45,7 @@ int main(void)
         return 1;
     }
 
-    /* Connect to Agent */
+    /* Connect */
     if (connect(sock_fd,
                 (struct sockaddr *)&server_addr,
                 sizeof(server_addr)) < 0)
@@ -58,9 +58,10 @@ int main(void)
     printf("Connected to RemoteOps Agent.\n");
 
     /*
-     * Send authentication command
+     * Send AUTH
      */
-    const char *auth_command = "AUTH OPS-2229\n";
+    const char *auth_command =
+        "AUTH OPS-2229\n";
 
     send(sock_fd,
          auth_command,
@@ -69,19 +70,51 @@ int main(void)
 
     printf("Sent: %s", auth_command);
 
-    /*
-     * Receive authentication response
-     */
+    /* Receive AUTH response */
     memset(buffer, 0, sizeof(buffer));
 
-    ssize_t bytes_received = recv(sock_fd,
-                                  buffer,
-                                  sizeof(buffer) - 1,
-                                  0);
+    ssize_t bytes_received =
+        recv(sock_fd,
+             buffer,
+             sizeof(buffer) - 1,
+             0);
 
-    if (bytes_received < 0)
+    if (bytes_received <= 0)
     {
-        perror("recv");
+        printf("Agent disconnected.\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    buffer[bytes_received] = '\0';
+
+    printf("Agent response: %s", buffer);
+
+    /*
+     * Send SYSINFO
+     */
+    const char *sysinfo_command =
+        "SYSINFO\n";
+
+    send(sock_fd,
+         sysinfo_command,
+         strlen(sysinfo_command),
+         0);
+
+    printf("Sent: %s", sysinfo_command);
+
+    /* Receive SYSINFO response */
+    memset(buffer, 0, sizeof(buffer));
+
+    bytes_received =
+        recv(sock_fd,
+             buffer,
+             sizeof(buffer) - 1,
+             0);
+
+    if (bytes_received <= 0)
+    {
+        printf("Agent disconnected.\n");
         close(sock_fd);
         return 1;
     }

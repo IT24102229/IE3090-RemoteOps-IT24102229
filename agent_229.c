@@ -10,6 +10,9 @@
 #define PORT 9410
 #define BUFFER_SIZE 1024
 
+#define AUTH_TOKEN "OPS-2229"
+#define SESSION_ID "9222"
+
 int main(void)
 {
     int server_fd;
@@ -22,7 +25,7 @@ int main(void)
 
     char buffer[BUFFER_SIZE];
 
-    /* 1. Create the TCP socket */
+    /* Create TCP socket */
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (server_fd < 0)
@@ -33,14 +36,14 @@ int main(void)
 
     printf("TCP socket created successfully.\n");
 
-    /* 2. Prepare the server address */
+    /* Prepare server address */
     memset(&server_addr, 0, sizeof(server_addr));
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    /* 3. Bind the socket to port 9410 */
+    /* Bind socket to port */
     if (bind(server_fd,
              (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0)
@@ -52,7 +55,7 @@ int main(void)
 
     printf("Agent bound to port %d.\n", PORT);
 
-    /* 4. Start listening */
+    /* Listen for connections */
     if (listen(server_fd, 5) < 0)
     {
         perror("listen");
@@ -62,7 +65,7 @@ int main(void)
 
     printf("Agent is listening...\n");
 
-    /* 5. Wait for a Controller */
+    /* Accept Controller connection */
     client_fd = accept(server_fd,
                        (struct sockaddr *)&client_addr,
                        &client_len);
@@ -76,14 +79,71 @@ int main(void)
 
     printf("Controller connected successfully!\n");
 
-    /* 6. Send a simple test message */
-    strcpy(buffer, "Hello from RemoteOps Agent!\n");
+    /*
+     * Receive authentication command
+     */
+    memset(buffer, 0, sizeof(buffer));
 
-    send(client_fd, buffer, strlen(buffer), 0);
+    ssize_t bytes_received = recv(client_fd,
+                                  buffer,
+                                  sizeof(buffer) - 1,
+                                  0);
 
-    printf("Test message sent to Controller.\n");
+    if (bytes_received < 0)
+    {
+        perror("recv");
+        close(client_fd);
+        close(server_fd);
+        return 1;
+    }
 
-    /* 7. Close the connection */
+    buffer[bytes_received] = '\0';
+
+    printf("Received: %s", buffer);
+
+    /*
+     * Check authentication command
+     */
+    char expected_command[BUFFER_SIZE];
+
+    snprintf(expected_command,
+             sizeof(expected_command),
+             "AUTH %s\n",
+             AUTH_TOKEN);
+
+    if (strcmp(buffer, expected_command) == 0)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "OK AUTHENTICATED SID:%s\n",
+                 SESSION_ID);
+
+        send(client_fd,
+             response,
+             strlen(response),
+             0);
+
+        printf("Authentication successful.\n");
+    }
+    else
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 001 AUTH_FAILED SID:%s\n",
+                 SESSION_ID);
+
+        send(client_fd,
+             response,
+             strlen(response),
+             0);
+
+        printf("Authentication failed.\n");
+    }
+
     close(client_fd);
     close(server_fd);
 

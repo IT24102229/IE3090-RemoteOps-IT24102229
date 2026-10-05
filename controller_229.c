@@ -19,7 +19,7 @@ int main(void)
 
     char buffer[BUFFER_SIZE];
 
-    /* 1. Create the TCP socket */
+    /* Create TCP socket */
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (sock_fd < 0)
@@ -30,13 +30,14 @@ int main(void)
 
     printf("TCP socket created successfully.\n");
 
-    /* 2. Prepare the Agent address */
+    /* Prepare Agent address */
     memset(&server_addr, 0, sizeof(server_addr));
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
 
-    if (inet_pton(AF_INET, "127.0.0.1",
+    if (inet_pton(AF_INET,
+                  "127.0.0.1",
                   &server_addr.sin_addr) <= 0)
     {
         perror("inet_pton");
@@ -44,7 +45,7 @@ int main(void)
         return 1;
     }
 
-    /* 3. Connect to the Agent */
+    /* Connect to Agent */
     if (connect(sock_fd,
                 (struct sockaddr *)&server_addr,
                 sizeof(server_addr)) < 0)
@@ -56,7 +57,21 @@ int main(void)
 
     printf("Connected to RemoteOps Agent.\n");
 
-    /* 4. Receive the Agent's test message */
+    /*
+     * Send authentication command
+     */
+    const char *auth_command = "AUTH OPS-2229\n";
+
+    send(sock_fd,
+         auth_command,
+         strlen(auth_command),
+         0);
+
+    printf("Sent: %s", auth_command);
+
+    /*
+     * Receive authentication response
+     */
     memset(buffer, 0, sizeof(buffer));
 
     ssize_t bytes_received = recv(sock_fd,
@@ -73,9 +88,8 @@ int main(void)
 
     buffer[bytes_received] = '\0';
 
-    printf("Agent says: %s", buffer);
+    printf("Agent response: %s", buffer);
 
-    /* 5. Close the connection */
     close(sock_fd);
 
     printf("Controller stopped.\n");

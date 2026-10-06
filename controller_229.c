@@ -2,485 +2,245 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
-#define PORT 9410
+#define SERVER_PORT 9410
+#define UDP_PORT 9500
 #define BUFFER_SIZE 8192
 
+#define AUTH_TOKEN "OPS-2229"
+#define SESSION_ID "9222"
 
-/* Send all bytes */
-int send_all(int sock_fd,
-             const char *data,
-             size_t length)
+int send_all(int sock, const char *data, size_t length)
 {
-    size_t total_sent = 0;
+    size_t total = 0;
 
-    while (total_sent < length)
+    while (total < length)
     {
-        ssize_t sent =
-            send(sock_fd,
-                 data + total_sent,
-                 length - total_sent,
-                 0);
+        ssize_t sent = send(sock, data + total, length - total, 0);
 
         if (sent <= 0)
         {
             return -1;
         }
 
-        total_sent += sent;
+        total += sent;
     }
 
     return 0;
 }
 
-
-/* Receive one complete line */
-int receive_line(int sock_fd,
-                 char *buffer,
-                 size_t buffer_size)
+int receive_line(int sock, char *buffer, size_t buffer_size)
 {
-    size_t position = 0;
+    size_t i = 0;
 
-    while (position < buffer_size - 1)
+    while (i < buffer_size - 1)
     {
-        char character;
+        char c;
 
-        ssize_t received =
-            recv(sock_fd,
-                 &character,
-                 1,
-                 0);
+        ssize_t received = recv(sock, &c, 1, 0);
 
         if (received <= 0)
         {
             return -1;
         }
 
-        buffer[position++] = character;
+        buffer[i++] = c;
 
-        if (character == '\n')
+        if (c == '\n')
         {
             break;
         }
     }
 
-    buffer[position] = '\0';
-
-    return (int)position;
-}
-
-
-/* Send a local file to the Agent */
-int send_file(int sock_fd,
-              const char *filename,
-              long filesize)
-{
-    FILE *file;
-
-    char buffer[BUFFER_SIZE];
-
-    long remaining = filesize;
-
-    file = fopen(filename, "rb");
-
-    if (file == NULL)
-    {
-        perror("Could not open file");
-        return -1;
-    }
-
-    while (remaining > 0)
-    {
-        size_t amount = sizeof(buffer);
-
-        if (remaining < (long)amount)
-        {
-            amount = (size_t)remaining;
-        }
-
-        size_t bytes_read =
-            fread(buffer,
-                  1,
-                  amount,
-                  file);
-
-        if (bytes_read == 0)
-        {
-            fclose(file);
-            return -1;
-        }
-
-        if (send_all(sock_fd,
-                     buffer,
-                     bytes_read) < 0)
-        {
-            fclose(file);
-            return -1;
-        }
-
-        remaining -= bytes_read;
-    }
-
-    fclose(file);
+    buffer[i] = '\0';
 
     return 0;
 }
-
-
-/* Receive exactly filesize bytes and save them */
-int receive_file(int sock_fd,
-                 const char *filename,
-                 long filesize)
-{
-    FILE *file;
-
-    char buffer[BUFFER_SIZE];
-
-    long remaining = filesize;
-
-    file = fopen(filename, "wb");
-
-    if (file == NULL)
-    {
-        perror("Could not create downloaded file");
-        return -1;
-    }
-
-    while (remaining > 0)
-    {
-        size_t amount = sizeof(buffer);
-
-        if (remaining < (long)amount)
-        {
-            amount = (size_t)remaining;
-        }
-
-        ssize_t received =
-            recv(sock_fd,
-                 buffer,
-                 amount,
-                 0);
-
-        if (received <= 0)
-        {
-            fclose(file);
-            return -1;
-        }
-
-        size_t written =
-            fwrite(buffer,
-                   1,
-                   received,
-                   file);
-
-        if (written != (size_t)received)
-        {
-            fclose(file);
-            return -1;
-        }
-
-        remaining -= received;
-    }
-
-    fclose(file);
-
-    return 0;
-}
-
 
 int main()
 {
-    int sock_fd;
+    int tcp_socket;
+    int udp_socket;
 
-    struct sockaddr_in server_addr;
+    struct sockaddr_in server_address;
+    struct sockaddr_in udp_address;
 
     char buffer[BUFFER_SIZE];
 
-
     /* Create TCP socket */
+    tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
 
-    sock_fd = socket(AF_INET,
-                     SOCK_STREAM,
-                     0);
-
-    if (sock_fd < 0)
+    if (tcp_socket < 0)
     {
-        perror("Socket creation failed");
+        perror("TCP socket");
         return 1;
     }
 
-    printf("TCP socket created successfully.\n");
+    memset(&server_address, 0, sizeof(server_address));
 
-
-    /* Configure Agent address */
-
-    memset(&server_addr,
-           0,
-           sizeof(server_addr));
-
-    server_addr.sin_family = AF_INET;
-
-    server_addr.sin_port =
-        htons(PORT);
-
-    server_addr.sin_addr.s_addr =
-        htonl(INADDR_LOOPBACK);
-
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(SERVER_PORT);
+    server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     /* Connect to Agent */
-
-    if (connect(sock_fd,
-                (struct sockaddr *)&server_addr,
-                sizeof(server_addr)) < 0)
+    if (connect(tcp_socket,
+                (struct sockaddr *)&server_address,
+                sizeof(server_address)) < 0)
     {
-        perror("Connection failed");
-
-        close(sock_fd);
-
+        perror("connect");
+        close(tcp_socket);
         return 1;
     }
 
-    printf("Connected to RemoteOps Agent.\n");
+    printf("Connected to Agent on TCP port %d.\n", SERVER_PORT);
 
+    /*  AUTH  */
 
-    /* 
-       AUTHENTICATION
-        */
+    snprintf(buffer,
+             sizeof(buffer),
+             "AUTH %s\n",
+             AUTH_TOKEN);
 
-    const char *auth_command =
-        "AUTH OPS-2229\n";
+    send_all(tcp_socket, buffer, strlen(buffer));
 
-    send_all(sock_fd,
-             auth_command,
-             strlen(auth_command));
-
-    printf("Sent: %s",
-           auth_command);
-
-
-    memset(buffer,
-           0,
-           sizeof(buffer));
-
-    if (receive_line(sock_fd,
-                     buffer,
-                     sizeof(buffer)) < 0)
+    if (receive_line(tcp_socket, buffer, sizeof(buffer)) < 0)
     {
-        printf("Connection closed by Agent.\n");
-
-        close(sock_fd);
-
+        printf("Failed to receive authentication response.\n");
+        close(tcp_socket);
         return 1;
     }
 
-    printf("Agent response: %s",
-           buffer);
+    printf("Agent: %s", buffer);
 
-
-    /* 
-       PUT
-        */
-
-    const char *local_filename =
-        "test_upload.txt";
-
-    const char *remote_filename =
-        "test_upload.txt";
-
-
-    FILE *test_file =
-        fopen(local_filename,
-              "rb");
-
-    if (test_file == NULL)
+    if (strncmp(buffer, "OK AUTHENTICATED", 15) != 0)
     {
-        perror("Could not open test file");
-
-        close(sock_fd);
-
+        printf("Authentication failed.\n");
+        close(tcp_socket);
         return 1;
     }
 
+    printf("Authentication successful.\n\n");
 
-    fseek(test_file,
-          0,
-          SEEK_END);
+    /*  UDP SOCKET  */
 
-    long filesize =
-        ftell(test_file);
+    udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
 
-    fclose(test_file);
-
-
-    printf("\nUploading %s (%ld bytes)\n",
-           local_filename,
-           filesize);
-
-
-    char put_command[BUFFER_SIZE];
-
-    snprintf(put_command,
-             sizeof(put_command),
-             "PUT %s %ld\n",
-             remote_filename,
-             filesize);
-
-
-    send_all(sock_fd,
-             put_command,
-             strlen(put_command));
-
-    printf("Sent: %s",
-           put_command);
-
-
-    if (send_file(sock_fd,
-                  local_filename,
-                  filesize) < 0)
+    if (udp_socket < 0)
     {
-        printf("File upload failed.\n");
-
-        close(sock_fd);
-
+        perror("UDP socket");
+        close(tcp_socket);
         return 1;
     }
 
+    memset(&udp_address, 0, sizeof(udp_address));
 
-    memset(buffer,
-           0,
-           sizeof(buffer));
+    udp_address.sin_family = AF_INET;
+    udp_address.sin_port = htons(UDP_PORT);
+    udp_address.sin_addr.s_addr = htonl(INADDR_ANY);
 
-
-    if (receive_line(sock_fd,
-                     buffer,
-                     sizeof(buffer)) < 0)
+    /*
+     * Bind UDP socket before starting monitoring.
+     * This prevents the first monitoring packet from being lost.
+     */
+    if (bind(udp_socket,
+             (struct sockaddr *)&udp_address,
+             sizeof(udp_address)) < 0)
     {
-        printf("Connection closed by Agent.\n");
-
-        close(sock_fd);
-
+        perror("UDP bind");
+        close(udp_socket);
+        close(tcp_socket);
         return 1;
     }
 
+    printf("UDP listener ready on port %d.\n\n", UDP_PORT);
 
-    printf("Agent response: %s",
-           buffer);
+    /*  MONITOR START  */
 
+    snprintf(buffer,
+             sizeof(buffer),
+             "MONITOR START %d\n",
+             UDP_PORT);
 
-    /* =========================
-       GET
-       ========================= */
+    send_all(tcp_socket, buffer, strlen(buffer));
 
-    const char *download_filename =
-        "downloaded_test_upload.txt";
-
-
-    char get_command[BUFFER_SIZE];
-
-    snprintf(get_command,
-             sizeof(get_command),
-             "GET %s\n",
-             remote_filename);
-
-
-    printf("\nDownloading %s\n",
-           remote_filename);
-
-
-    send_all(sock_fd,
-             get_command,
-             strlen(get_command));
-
-    printf("Sent: %s",
-           get_command);
-
-
-    /* Receive GET response */
-
-    memset(buffer,
-           0,
-           sizeof(buffer));
-
-
-    if (receive_line(sock_fd,
-                     buffer,
-                     sizeof(buffer)) < 0)
+    if (receive_line(tcp_socket, buffer, sizeof(buffer)) < 0)
     {
-        printf("Connection closed by Agent.\n");
-
-        close(sock_fd);
-
+        printf("Failed to receive MONITOR START response.\n");
+        close(udp_socket);
+        close(tcp_socket);
         return 1;
     }
 
+    printf("Agent: %s", buffer);
 
-    printf("Agent response: %s",
-           buffer);
-
-
-    /* Check whether file was found */
-
-    if (strncmp(buffer,
-                "OK FILE_SEND ",
-                13) == 0)
+    if (strncmp(buffer, "OK MONITOR_STARTED", 18) != 0)
     {
-        char received_filename[256];
+        printf("Monitoring failed to start.\n");
+        close(udp_socket);
+        close(tcp_socket);
+        return 1;
+    }
 
-        long received_filesize;
+    printf("UDP monitoring started.\n\n");
 
+    /*  RECEIVE MONITOR DATA  */
 
-        if (sscanf(buffer,
-                   "OK FILE_SEND %255s %ld",
-                   received_filename,
-                   &received_filesize) != 2)
+    for (int i = 1; i <= 5; i++)
+    {
+        char monitor_buffer[BUFFER_SIZE];
+
+        ssize_t received = recvfrom(
+            udp_socket,
+            monitor_buffer,
+            sizeof(monitor_buffer) - 1,
+            0,
+            NULL,
+            NULL
+        );
+
+        if (received < 0)
         {
-            printf("Invalid GET response.\n");
-
-            close(sock_fd);
-
-            return 1;
+            perror("recvfrom");
+            break;
         }
 
+        monitor_buffer[received] = '\0';
 
-        printf("Receiving file: %s\n",
-               received_filename);
+        printf("Monitoring message %d:\n", i);
+        printf("%s\n", monitor_buffer);
+    }
 
-        printf("File size: %ld bytes\n",
-               received_filesize);
+    /*  MONITOR STOP  */
 
+    printf("Stopping UDP monitoring...\n");
 
-        if (receive_file(sock_fd,
-                         download_filename,
-                         received_filesize) < 0)
-        {
-            printf("File download failed.\n");
+    snprintf(buffer,
+             sizeof(buffer),
+             "MONITOR STOP\n");
 
-            close(sock_fd);
+    send_all(tcp_socket, buffer, strlen(buffer));
 
-            return 1;
-        }
-
-
-        printf("File downloaded successfully.\n");
-
-        printf("Saved as: %s\n",
-               download_filename);
+    if (receive_line(tcp_socket, buffer, sizeof(buffer)) < 0)
+    {
+        printf("Failed to receive MONITOR STOP response.\n");
     }
     else
     {
-        printf("GET failed.\n");
+        printf("Agent: %s", buffer);
     }
 
+    printf("UDP monitoring stopped.\n");
 
-    /* Close connection */
+    /*  CLEANUP  */
 
-    close(sock_fd);
+    close(udp_socket);
+    close(tcp_socket);
 
-    printf("\nController stopped.\n");
+    printf("Controller closed.\n");
 
     return 0;
 }

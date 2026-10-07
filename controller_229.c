@@ -18,9 +18,9 @@
 #define BUFFER_SIZE 8192
 
 
-/* -------------------------------------------------- */
-/* Send all bytes                                     */
-/* -------------------------------------------------- */
+
+/* Send all bytes   */
+
 
 int send_all(int sock_fd,
              const char *data,
@@ -48,9 +48,7 @@ int send_all(int sock_fd,
 }
 
 
-/* -------------------------------------------------- */
-/* Receive one line                                   */
-/* -------------------------------------------------- */
+/* Receive one line     */
 
 int recv_line(int sock_fd,
               char *buffer,
@@ -91,10 +89,7 @@ int recv_line(int sock_fd,
     return (int)position;
 }
 
-
-/* -------------------------------------------------- */
-/* Send a file using PUT                              */
-/* -------------------------------------------------- */
+/* Send a file using PUT  */
 
 int upload_file(int sock_fd,
                 const char *local_filename,
@@ -169,9 +164,9 @@ int upload_file(int sock_fd,
 }
 
 
-/* -------------------------------------------------- */
-/* Receive exact file bytes                           */
-/* -------------------------------------------------- */
+
+/* Receive exact file bytes  */
+
 
 int receive_file_data(int sock_fd,
                       FILE *file,
@@ -230,9 +225,8 @@ int receive_file_data(int sock_fd,
 }
 
 
-/* -------------------------------------------------- */
-/* Download file using GET                            */
-/* -------------------------------------------------- */
+/* Download file using GET   */
+
 
 int download_file(int sock_fd,
                   const char *remote_filename,
@@ -338,9 +332,9 @@ int download_file(int sock_fd,
 }
 
 
-/* -------------------------------------------------- */
-/* Create UDP listener                                */
-/* -------------------------------------------------- */
+
+/* Create UDP listener      */
+
 
 int create_udp_socket(int port)
 {
@@ -396,11 +390,7 @@ int create_udp_socket(int port)
     return udp_socket;
 }
 
-
-/* -------------------------------------------------- */
-/* Display any waiting UDP monitoring messages        */
-/* -------------------------------------------------- */
-
+/* Display any waiting UDP monitoring messages     */
 void check_udp_messages(int udp_socket)
 {
     if (udp_socket < 0)
@@ -477,9 +467,6 @@ void check_udp_messages(int udp_socket)
 }
 
 
-/* -------------------------------------------------- */
-/* Main                                               */
-/* -------------------------------------------------- */
 
 int main(void)
 {
@@ -493,9 +480,9 @@ int main(void)
     struct sockaddr_in server_addr;
 
 
-    /* ------------------------------------------------ */
-    /* Create TCP socket                                */
-    /* ------------------------------------------------ */
+  
+    /* Create TCP socket     */
+  
 
     sock_fd =
         socket(AF_INET,
@@ -511,9 +498,9 @@ int main(void)
     }
 
 
-    /* ------------------------------------------------ */
-    /* Prepare Agent address                            */
-    /* ------------------------------------------------ */
+    
+    /* Prepare Agent address   */
+  
 
     memset(&server_addr,
            0,
@@ -540,9 +527,9 @@ int main(void)
     }
 
 
-    /* ------------------------------------------------ */
-    /* Connect to Agent                                 */
-    /* ------------------------------------------------ */
+    
+    /* Connect to Agent   */
+    
 
     if (connect(sock_fd,
                 (struct sockaddr *)&server_addr,
@@ -566,9 +553,9 @@ int main(void)
     char response[BUFFER_SIZE];
 
 
-    /* ------------------------------------------------ */
+  
     /* Interactive command loop                         */
-    /* ------------------------------------------------ */
+    
 
     while (1)
     {
@@ -609,9 +596,9 @@ int main(void)
         }
 
 
-        /* ------------------------------------------------ */
-        /* QUIT                                              */
-        /* ------------------------------------------------ */
+        
+        /* QUIT  */
+        
 
         if (strcmp(command,
                    "QUIT") == 0)
@@ -641,9 +628,9 @@ int main(void)
         }
 
 
-        /* ------------------------------------------------ */
-        /* PUT                                               */
-        /* ------------------------------------------------ */
+        
+        /* PUT    */
+        
 
         else if (strcmp(command,
                         "PUT") == 0)
@@ -709,9 +696,9 @@ int main(void)
         }
 
 
-        /* ------------------------------------------------ */
-        /* GET                                               */
-        /* ------------------------------------------------ */
+        
+        /* GET     */
+        
 
         else if (strcmp(command,
                         "GET") == 0)
@@ -763,9 +750,9 @@ int main(void)
         }
 
 
-        /* ------------------------------------------------ */
-        /* MONITOR START                                    */
-        /* ------------------------------------------------ */
+        
+        /* MONITOR START      */
+        
 
         else if (strcmp(command,
                         "MONITOR START") == 0)
@@ -888,9 +875,9 @@ int main(void)
         }
 
 
-        /* ------------------------------------------------ */
+        
         /* MONITOR STOP                                     */
-        /* ------------------------------------------------ */
+        
 
         else if (strcmp(command,
                         "MONITOR STOP") == 0)
@@ -936,9 +923,9 @@ int main(void)
         }
 
 
-        /* ------------------------------------------------ */
+        
         /* Normal TCP commands                              */
-        /* ------------------------------------------------ */
+        /
 
         else
         {
@@ -994,9 +981,9 @@ int main(void)
     }
 
 
-    /* ------------------------------------------------ */
+    
     /* Cleanup                                          */
-    /* ------------------------------------------------ */
+    
 
     if (udp_socket >= 0)
     {
